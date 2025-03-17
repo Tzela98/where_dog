@@ -27,6 +27,18 @@ frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 SMOOTHING_WINDOW_SIZE = 5  # Number of frames to average over
 step_history = []  # Store recent steps for smoothing
 
+# Dog tracking variables
+no_dog_counter = 0
+SWEEP_THRESHOLD = 50
+
+# Initililze sweep parameters
+SWEEP_RANGE_START = 0
+SWEEP_RANGE_END = 180
+SWEEP_STEP_SIZE = 1
+current_position = SWEEP_RANGE_START
+sweep_direction = 1 # 1 for right, -1 for left
+sweep_flag = False
+
 # Function to track the dog and return its horizontal center
 def track_dog(frame, model):
     # Run YOLOv5 inference
@@ -59,6 +71,10 @@ def calculate_stepper_movement(dog_center_x, frame_width):
     steps = int(offset * scaling_factor)
 
     return steps
+
+# Map sweep position (0-180) to steps (0-200)
+def map_sweep_to_steps(position, sweep_range_start, sweep_range_end, step_range_start, step_range_end):
+    return int(np.interp(position, [sweep_range_start, sweep_range_end], [step_range_start, step_range_end]))
 
 # Function to smooth steps using a moving average
 def smooth_steps(new_steps):
@@ -96,9 +112,7 @@ while True:
     track_result, dog_center_x = track_dog(frame, model)
 
     if track_result is not None:
-        # Render the results (for visualization)
         frame_with_result = track_result.render()[0]
-
         # Create a writable copy of the rendered frame
         frame_with_result = frame_with_result.copy()
     else:
@@ -117,6 +131,11 @@ while True:
             print(f"Sent smoothed steps: {smoothed_steps}")
         except Exception as e:
             print(f"Error sending data to ESP32: {e}")
+
+        # Reset dog tracking variables
+        no_dog_counter = 0
+        sweep_flag = False
+
     else:
         # Send 0 steps when no dog is detected
         try:
@@ -124,6 +143,35 @@ while True:
             print("Sent steps: 0 (no dog detected)")
         except Exception as e:
             print(f"Error sending data to ESP32: {e}")
+
+        # Increment dog no dog counter
+        no_dog_counter += 1
+
+        if no_dog_counter >= SWEEP_THRESHOLD and not sweep_flag:
+            sweep_flag = True
+            current_position = SWEEP_RANGE_START
+            sweep_direction = 1
+            print('Starting Camera Sweep...')
+    
+    if sweep_flag:
+        current_position += sweep_direction * SWEEP_STEP_SIZE
+
+        # Map sweep position to steps
+        target_steps = map_sweep_to_steps(current_position, SWEEP_RANGE_START, SWEEP_RANGE_END, 0, 200)
+
+        # Send the target steps to the Arduino
+        try:
+            ser.write(f"{target_steps}\n".encode())
+            print(f"Sent target steps: {target_steps}")
+        except Exception as e:
+            print(f"Error sending target steps to ESP32: {e}")
+
+        # Check sweep boundaries
+        if current_position >= SWEEP_RANGE_END:
+            sweep_direction = -1  # Reverse direction (move left)
+        elif current_position <= SWEEP_RANGE_START:
+            sweep_direction = 1  # Reverse direction (move right)
+
 
     # Draw the bounding box and center line (for visualization)
     if dog_center_x is not None:
